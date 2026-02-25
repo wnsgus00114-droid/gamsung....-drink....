@@ -171,12 +171,13 @@
 
 from __future__ import annotations
 
-import glob
 import ctypes
 import importlib
+import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 _PYGAME_MODULE = None
@@ -187,6 +188,7 @@ def load_pygame_module():
     if _PYGAME_MODULE is not None:
         return _PYGAME_MODULE
     try:
+        os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
         _PYGAME_MODULE = importlib.import_module("pygame")
     except Exception:
         _PYGAME_MODULE = False
@@ -208,7 +210,7 @@ INTERVAL_SECONDS = 3.55
 ACCENT_COLOR = "\033[95m"
 BASE_COLOR = "\033[97m"
 RESET = "\033[0m"
-TARGET_TRACK_KEYS = ["2022.02.07", "2019.0322"]
+TARGET_TRACK_FILES = ["2022.02.07.mp3", "2019.0322.mp3"]
 
 SPECIAL_LINE_START = 156
 SPECIAL_LINE_END = 168
@@ -264,12 +266,12 @@ def apply_special_rule(
 
 def find_target_mp3s(search_dirs: list[Path]) -> list[Path]:
     selected: list[Path] = []
-    for target_key in TARGET_TRACK_KEYS:
+    for file_name in TARGET_TRACK_FILES:
         found: Path | None = None
         for search_dir in search_dirs:
-            matches = sorted(Path(path) for path in glob.glob(str(search_dir / f"*{target_key}*.mp3")))
-            if matches:
-                found = matches[0]
+            candidate = search_dir / file_name
+            if candidate.exists():
+                found = candidate
                 break
         if found is not None:
             selected.append(found)
@@ -289,9 +291,21 @@ def enable_windows_ansi() -> None:
         pass
 
 
+@contextmanager
+def suppress_stderr():
+    saved_stderr_fd = os.dup(2)
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as null_file:
+            os.dup2(null_file.fileno(), 2)
+            yield
+    finally:
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stderr_fd)
+
+
 def start_bgm(mp3_paths: list[Path]) -> tuple[bool, threading.Event | None, threading.Thread | None]:
-    if len(mp3_paths) != len(TARGET_TRACK_KEYS):
-        print("(안내) 요청한 배경음 파일(2022.02.07, 2019.0322)을 찾지 못했어요.")
+    if len(mp3_paths) != len(TARGET_TRACK_FILES):
+        print("(안내) 요청한 배경음 파일(2022.02.07.mp3, 2019.0322.mp3)을 찾지 못했어요.")
         return False, None, None
     pygame_module = load_pygame_module()
     if not pygame_module:
@@ -303,8 +317,9 @@ def start_bgm(mp3_paths: list[Path]) -> tuple[bool, threading.Event | None, thre
         while not stop_event.is_set():
             current_path = mp3_paths[index]
             try:
-                pygame_module.mixer.music.load(str(current_path))
-                pygame_module.mixer.music.play()
+                with suppress_stderr():
+                    pygame_module.mixer.music.load(str(current_path))
+                    pygame_module.mixer.music.play()
             except Exception:
                 break
             while not stop_event.is_set() and pygame_module.mixer.music.get_busy():
@@ -312,7 +327,8 @@ def start_bgm(mp3_paths: list[Path]) -> tuple[bool, threading.Event | None, thre
             index = (index + 1) % len(mp3_paths)
 
     try:
-        pygame_module.mixer.init()
+        with suppress_stderr():
+            pygame_module.mixer.init()
         stop_event = threading.Event()
         thread = threading.Thread(target=worker, args=(stop_event,), daemon=True)
         thread.start()
